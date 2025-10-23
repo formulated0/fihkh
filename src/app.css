@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-terminal-border;
+  }
+  
+  body {
+    @apply bg-terminal-bg text-terminal-fg font-mono text-tui;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  #app {
+    @apply w-screen h-screen;
+  }
+}
+
+@layer components {
+  /* Custom scrollbar styling */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-terminal-bg-light;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-terminal-border-bright rounded;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    @apply bg-terminal-fg-dimmer;
+  }
+
+  /* TUI-style borders */
+  .tui-border {
+    @apply border border-terminal-border;
+  }
+
+  .tui-border-bright {
+    @apply border border-terminal-border-bright;
+  }
+
+  /* Selection styles */
+  .file-item-selected {
+    @apply bg-terminal-selected text-white;
+  }
+
+  .file-item-hover {
+    @apply bg-terminal-bg-lighter;
+  }
+}
+
+/* Prevent text selection on UI elements */
+.no-select {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
