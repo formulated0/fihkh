@@ -1,2 +1,4 @@
 # fihkh
-## **f**older? **i** **h**ardly **k**now **h**er!
+## folder? i hardly know her!
+(pronounced fick)
+file manager for myself because i dont like gtk/qt on hyprland
