@@ -1,6 +1,27 @@
 <script>
+  import { afterUpdate } from 'svelte';
+  
   export let items = [];
   export let selectedIndex = 0;
+  export let onNavigate;
+  export let onSelect;
+
+  let listContainer;
+  // An array to hold references to each DOM element in the list
+  let itemElements = [];
+
+  // Scroll selected item into view after updates
+  afterUpdate(() => {
+    // Get the specific element corresponding to the selectedIndex
+    const selectedElement = itemElements[selectedIndex];
+    
+    if (selectedElement) {
+      selectedElement.scrollIntoView({
+        block: 'nearest',
+        behavior: 'auto'
+      });
+    }
+  });
 
   function formatSize(bytes) {
     if (bytes === 0) return '0 B';
@@ -52,6 +73,19 @@
     
     return iconMap[ext] || '📄';
   }
+
+  function handleClick(index) {
+    onSelect(index);
+  }
+
+  function handleDoubleClick(item) {
+    if (item.isDirectory) {
+      onNavigate(item.path);
+    } else {
+      // TODO: Open file in Phase 2
+      console.log('Open file:', item.path);
+    }
+  }
 </script>
 
 <div class="flex flex-col h-full">
@@ -64,12 +98,17 @@
   </div>
 
   <!-- File List -->
-  <div class="flex-1 overflow-y-auto custom-scrollbar">
+  <div class="flex-1 overflow-y-auto custom-scrollbar" bind:this={listContainer}>
     {#each items as item, index}
       <div 
-        class="px-4 py-1.5 flex items-center cursor-pointer transition-colors"
+        bind:this={itemElements[index]}
+        class="px-4 py-1.5 flex items-center cursor-pointer"
         class:file-item-selected={index === selectedIndex}
         class:file-item-hover={index !== selectedIndex}
+        on:click={() => handleClick(index)}
+        on:dblclick={() => handleDoubleClick(item)}
+        role="button"
+        tabindex="-1"
       >
         <!-- Icon & Type Indicator -->
         <div class="w-12 flex items-center gap-2">

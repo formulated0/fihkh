@@ -11,7 +11,11 @@
     "build": "vite build",
     "preview": "vite preview"
   },
-  "keywords": ["file-manager", "electron", "svelte"],
+  "keywords": [
+    "file-manager",
+    "electron",
+    "svelte"
+  ],
   "author": "",
   "license": "MIT",
   "devDependencies": {
@@ -25,5 +29,7 @@
     "vite": "^5.0.8",
     "wait-on": "^7.2.0"
   },
-  "dependencies": {}
+  "dependencies": {
+    "path-browserify": "^1.0.1"
+  }
 }

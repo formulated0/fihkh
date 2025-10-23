@@ -20,8 +20,8 @@ function createWindow() {
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.cjs')
     },
-    frame: true,
-    titleBarStyle: 'hidden',
+    frame: false,
+    titleBarStyle: 'hidden'
   });
 
   // Load from Vite dev server in development, or built files in production
@@ -159,5 +159,64 @@ ipcMain.handle('fs:exists', async (event, itemPath) => {
     return { success: true, exists: false };
   }
 });
+
+/**
+ * Get storage devices (Linux-specific for now)
+ */
+ipcMain.handle('fs:getDevices', async () => {
+  try {
+    const devices = [];
+    
+    // On Linux, check /proc/mounts
+    if (process.platform === 'linux') {
+      try {
+        const mounts = await fs.readFile('/proc/mounts', 'utf8');
+        const lines = mounts.split('\n');
+        const seenMounts = new Set();
+        
+        for (const line of lines) {
+          const parts = line.split(' ');
+          if (parts.length < 2) continue;
+          
+          const device = parts[0];
+          const mountPoint = parts[1];
+          
+          // Filter for actual disk devices and avoid duplicates
+          if ((device.startsWith('/dev/sd') || device.startsWith('/dev/nvme') || device.startsWith('/dev/mmcblk')) 
+              && !seenMounts.has(mountPoint)
+              && mountPoint !== '/boot'
+              && mountPoint !== '/boot/efi') {
+            seenMounts.add(mountPoint);
+            
+            devices.push({
+              name: path.basename(device),
+              device: device,
+              mountPoint: mountPoint,
+              total: 'N/A',
+              used: 'N/A',
+              free: 'N/A',
+              icon: mountPoint === '/' ? '💿' : '💾'
+            });
+          }
+        }
+      } catch (readError) {
+        console.error('Error reading /proc/mounts:', readError);
+      }
+    }
+    
+    return { success: true, devices };
+  } catch (error) {
+    console.error('Error getting devices:', error);
+    return { success: true, devices: [] };
+  }
+});
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
 
 console.log('Terminus main process started');

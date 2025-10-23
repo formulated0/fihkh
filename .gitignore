@@ -26,3 +26,4 @@ dist-ssr
 # Electron
 out/
 build/
+idea.md

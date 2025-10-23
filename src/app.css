@@ -5,6 +5,7 @@
 @layer base {
   * {
     @apply border-terminal-border;
+	user-select: none;
   }
   
   body {
@@ -52,7 +53,7 @@
     @apply bg-terminal-selected text-white;
   }
 
-  .file-item-hover {
+  .file-item-hover:hover {
     @apply bg-terminal-bg-lighter;
   }
 }
