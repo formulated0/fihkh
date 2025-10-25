@@ -13,6 +13,11 @@
   let baseItems = [];
   let items = [];
   let selectedIndex = 0;
+  // Multi-selection (VISUAL mode) — track by path for stability across sorts
+  let selectedPaths = new Set(); // Set<string>
+  let visualAnchorPath = null; // string | null
+  let lastFocusedPath = null; // string | null, for Shift+click anchor in NORMAL
+
   let loading = true;
   let error = null;
   let mode = 'NORMAL';
@@ -109,6 +114,16 @@
   // View binding for FileList depending on mode
   $: listItems = mode === 'FILTER' ? viewItems : items;
   $: selectedIndexForList = mode === 'FILTER' ? viewCursor : selectedIndex;
+  // Build a selected index Set in the coordinates of listItems from selectedPaths
+  $: selectedSetForList = (() => {
+    if (!selectedPaths || selectedPaths.size === 0) return new Set();
+    const set = new Set();
+    for (let i = 0; i < listItems.length; i++) {
+      const p = listItems[i]?.path;
+      if (p && selectedPaths.has(p)) set.add(i);
+    }
+    return set;
+  })();
 
 
   // Rename state
@@ -116,16 +131,17 @@
   let renameValue = '';
   let originalName = '';
 
-  // Delete confirmation
+  // Delete confirmation (supports multi)
   let showDeleteDialog = false;
-  let deleteTarget = null;
+  let deleteTargets = []; // Array<{ path, name, isDirectory }>
 
   // Pane widths (in pixels)
   let sidebarWidth = 200;
   let previewWidth = 400;
 
-  // Clipboard state for Cut/Copy/Paste (single item for now)
-  let clipboard = null; // { op: 'copy'|'cut', entry: { path, name, isDirectory }, sourceDir: string }
+  // Clipboard state for Cut/Copy/Paste (multi supported)
+  // { op: 'copy'|'cut', entries: Array<{ path, name, isDirectory }>, sourceDir: string }
+  let clipboard = null;
   let cutMarkedPaths = new Set();
 
   // One-shot centering control for FileList
@@ -170,6 +186,10 @@
   async function loadDirectory(dirPath, addToHistory = true) {
     loading = true;
     error = null;
+    // Leaving current directory clears multi-selection and VISUAL mode
+    selectedPaths = new Set();
+    visualAnchorPath = null;
+    if (mode === 'VISUAL') mode = 'NORMAL';
 
     const result = await window.electronAPI.readDir(dirPath);
 
@@ -226,6 +246,77 @@
       return;
     }
 
+    // VISUAL mode keyboard handling
+    if (mode === 'VISUAL') {
+      // Esc exits VISUAL and clears multi-selection
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        clearMultiSelection();
+        return;
+      }
+
+      // CCP/Delete are active in VISUAL and operate on the multi-selection
+      const isCtrlC = (event.key === 'c' || event.key === 'C') && (event.ctrlKey || event.metaKey);
+      const isCtrlX = (event.key === 'x' || event.key === 'X') && (event.ctrlKey || event.metaKey);
+      const isCtrlV = (event.key === 'v' || event.key === 'V') && (event.ctrlKey || event.metaKey);
+
+      if (event.key === 'c' || event.key === 'C' || isCtrlC) {
+        event.preventDefault();
+        startCopy();
+        return;
+      }
+      if (event.key === 'x' || event.key === 'X' || isCtrlX) {
+        event.preventDefault();
+        startCut();
+        return;
+      }
+      if (event.key === 'p' || event.key === 'P' || isCtrlV) {
+        event.preventDefault();
+        pasteClipboard();
+        return;
+      }
+      if (event.key === 'd' || event.key === 'Delete') {
+        event.preventDefault();
+        startDelete();
+        return;
+      }
+
+      // Movement extends selection from anchor
+      const prevIndex = selectedIndex;
+      if (event.key === 'j' || event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (selectedIndex < items.length - 1) {
+          selectedIndex++;
+          rememberIndex[currentPath] = selectedIndex;
+        }
+      } else if (event.key === 'k' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (selectedIndex > 0) {
+          selectedIndex--;
+          rememberIndex[currentPath] = selectedIndex;
+        }
+      } else if (event.key === 'G') {
+        event.preventDefault();
+        selectedIndex = items.length - 1;
+        rememberIndex[currentPath] = selectedIndex;
+      } else if (event.key === 'g') {
+        // simple 'gg' not implemented yet; using single 'g' no-op for now
+      } else if (event.key === 'l' || event.key === 'ArrowRight' || event.key === 'Enter') {
+        // Disable open in VISUAL for now
+        event.preventDefault();
+        return;
+      } else {
+        // Unhandled key in VISUAL → ignore
+        return;
+      }
+      // After moving, extend selection based on anchor
+      if (prevIndex !== selectedIndex) {
+        if (!visualAnchorPath) visualAnchorPath = items[prevIndex]?.path || items[selectedIndex]?.path || null;
+        extendSelectionTo(selectedIndex);
+      }
+      return;
+    }
+
     // '?' opens Help in NORMAL mode
     if (isQuestion) {
       event.preventDefault();
@@ -233,10 +324,22 @@
       return;
     }
 
-    // '/' starts live in-directory filter
+    // '/' starts live in-directory filter (also clears VISUAL)
     if (event.key === '/') {
       event.preventDefault();
+      clearMultiSelection();
       startFilter();
+      return;
+    }
+
+    // Toggle VISUAL mode
+    if (event.key === 'v' || event.key === 'V') {
+      event.preventDefault();
+      if (mode !== 'VISUAL') {
+        enterVisualMode();
+      } else {
+        clearMultiSelection();
+      }
       return;
     }
 
@@ -283,6 +386,7 @@
         if (selectedIndex < items.length - 1) {
           selectedIndex++;
           rememberIndex[currentPath] = selectedIndex;
+          lastFocusedPath = items[selectedIndex]?.path || null;
         }
         break;
       
@@ -292,6 +396,7 @@
         if (selectedIndex > 0) {
           selectedIndex--;
           rememberIndex[currentPath] = selectedIndex;
+          lastFocusedPath = items[selectedIndex]?.path || null;
         }
         break;
       
@@ -321,6 +426,7 @@
         event.preventDefault();
         selectedIndex = items.length - 1;
         rememberIndex[currentPath] = selectedIndex;
+        lastFocusedPath = items[selectedIndex]?.path || null;
         break;
       
       // Rename
@@ -369,12 +475,27 @@
       cancelFilter();
       return;
     }
+
+    // Enter opens selected item (like NORMAL 'Enter'), then exits FILTER
     if (event.key === 'Enter') {
       event.preventDefault();
       event.stopPropagation();
+      const realIndex = viewIndexMap[viewCursor] ?? selectedIndex;
+      if (typeof realIndex === 'number' && items[realIndex]) {
+        selectedIndex = realIndex;
+        rememberIndex[currentPath] = selectedIndex;
+        const it = items[realIndex];
+        if (it.isDirectory) {
+          loadDirectory(it.path, true);
+        } else {
+          console.log('Open file:', it.path);
+        }
+      }
       acceptFilter();
       return;
     }
+
+    // Arrow navigation moves within filtered list
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       event.stopPropagation();
@@ -385,6 +506,51 @@
       event.preventDefault();
       event.stopPropagation();
       if (viewCursor > 0) viewCursor--;
+      return;
+    }
+
+    // Modifier-based operations allowed in FILTER (letters must remain typeable)
+    const isCtrlC = (event.key === 'c' || event.key === 'C') && (event.ctrlKey || event.metaKey);
+    const isCtrlX = (event.key === 'x' || event.key === 'X') && (event.ctrlKey || event.metaKey);
+    const isCtrlV = (event.key === 'v' || event.key === 'V') && (event.ctrlKey || event.metaKey);
+
+    if (isCtrlC) {
+      event.preventDefault();
+      event.stopPropagation();
+      const realIndex = viewIndexMap[viewCursor] ?? selectedIndex;
+      if (typeof realIndex === 'number') {
+        selectedIndex = realIndex;
+        rememberIndex[currentPath] = selectedIndex;
+      }
+      startCopy();
+      return;
+    }
+    if (isCtrlX) {
+      event.preventDefault();
+      event.stopPropagation();
+      const realIndex = viewIndexMap[viewCursor] ?? selectedIndex;
+      if (typeof realIndex === 'number') {
+        selectedIndex = realIndex;
+        rememberIndex[currentPath] = selectedIndex;
+      }
+      startCut();
+      return;
+    }
+    if (isCtrlV) {
+      event.preventDefault();
+      event.stopPropagation();
+      pasteClipboard();
+      return;
+    }
+    if (event.key === 'Delete') {
+      event.preventDefault();
+      event.stopPropagation();
+      const realIndex = viewIndexMap[viewCursor] ?? selectedIndex;
+      if (typeof realIndex === 'number') {
+        selectedIndex = realIndex;
+        rememberIndex[currentPath] = selectedIndex;
+      }
+      startDelete();
       return;
     }
   }
@@ -417,68 +583,119 @@
   }
 
   function startCopy() {
-    const entry = items[selectedIndex];
-    if (!entry) return;
-    clipboard = { op: 'copy', entry, sourceDir: currentPath };
+    // Determine entries: multi-selection or single
+    let entries = [];
+    if (selectedPaths && selectedPaths.size > 1) {
+      entries = items.filter(it => selectedPaths.has(it.path));
+    } else if (items[selectedIndex]) {
+      entries = [items[selectedIndex]];
+    }
+    if (entries.length === 0) return;
+    clipboard = { op: 'copy', entries: entries.map(e => ({ path: e.path, name: e.name, isDirectory: e.isDirectory })), sourceDir: currentPath };
     // Clear visual cut marks if switching op
     cutMarkedPaths = new Set();
-    setStatus(`Copied: ${entry.name}`);
+    setStatus(entries.length === 1 ? `Copied: ${entries[0].name}` : `Copied: ${entries.length} items`);
   }
 
   function startCut() {
-    const entry = items[selectedIndex];
-    if (!entry) return;
-    clipboard = { op: 'cut', entry, sourceDir: currentPath };
-    cutMarkedPaths = new Set([entry.path]);
-    setStatus(`Cut: ${entry.name} (Esc to cancel)`);
+    // Determine entries: multi-selection or single
+    let entries = [];
+    if (selectedPaths && selectedPaths.size > 1) {
+      entries = items.filter(it => selectedPaths.has(it.path));
+    } else if (items[selectedIndex]) {
+      entries = [items[selectedIndex]];
+    }
+    if (entries.length === 0) return;
+    clipboard = { op: 'cut', entries: entries.map(e => ({ path: e.path, name: e.name, isDirectory: e.isDirectory })), sourceDir: currentPath };
+    cutMarkedPaths = new Set(entries.map(e => e.path));
+    setStatus(entries.length === 1 ? `Cut: ${entries[0].name} (Esc to cancel)` : `Cut: ${entries.length} items (Esc to cancel)`);
   }
+
+  // Multi-paste support
+  let pasteQueue = [];
+  let pasteIndex = 0;
 
   async function pasteClipboard() {
     if (!clipboard) return;
-    const entry = clipboard.entry;
     const destDir = currentPath;
 
-    // Same-dir cut to same name is a no-op
+    // Same-dir cut to same name(s) is a no-op
     if (clipboard.op === 'cut' && destDir === clipboard.sourceDir) {
-      // nothing to do
       clipboard = null;
       cutMarkedPaths = new Set();
+      setStatus('Cut cancelled (same directory)');
       return;
     }
 
-    let targetName = entry.name;
-    if (clipboard.op === 'copy' && destDir === clipboard.sourceDir) {
-      targetName = await uniqueCopyName(destDir, entry.name);
+    // Build entries to paste
+    const entries = clipboard.entries && clipboard.entries.length ? clipboard.entries : (clipboard.entry ? [clipboard.entry] : []);
+    if (!entries.length) return;
+
+    pasteQueue = [];
+    for (const entry of entries) {
+      let targetName = entry.name;
+      if (clipboard.op === 'copy' && destDir === clipboard.sourceDir) {
+        // Same-dir copy: generate unique name per entry
+        targetName = await uniqueCopyName(destDir, entry.name);
+      }
+      const destPath = path.join(destDir, targetName);
+      pasteQueue.push({ entry, destPath, overwrite: false });
+    }
+    pasteIndex = 0;
+    await processNextPasteItem();
+  }
+
+  async function processNextPasteItem() {
+    if (pasteIndex >= pasteQueue.length) {
+      // Done: reload dir, select last item, clear clipboard/marks
+      await loadDirectory(currentPath, false);
+      const last = pasteQueue[pasteQueue.length - 1];
+      if (last) {
+        const idx = items.findIndex(i => i.path === last.destPath);
+        if (idx !== -1) {
+          selectedIndex = idx;
+          rememberIndex[currentPath] = idx;
+        }
+      }
+      clipboard = null;
+      cutMarkedPaths = new Set();
+      // Clear multi-selection after paste to avoid confusion
+      clearMultiSelection();
+      setStatus(pasteQueue.length === 1 ? `Pasted: ${path.basename(pasteQueue[0].destPath)}` : `Pasted: ${pasteQueue.length} items`);
+      return;
     }
 
-    let destPath = path.join(destDir, targetName);
+    const item = pasteQueue[pasteIndex];
+    const { entry, destPath } = item;
 
-    // Check conflicts (for different dir, or copy same dir edge cases already handled)
+    // For copy into same dir we already generated unique names, so no conflict. For others, check existence.
     const existsRes = await window.electronAPI.exists(destPath);
     if (existsRes.success && existsRes.exists) {
-      // Ask to overwrite
-      overwriteMessage = `An item named "${targetName}" already exists here. Overwrite?`;
+      // Ask to overwrite for this item
+      overwriteMessage = `An item named "${path.basename(destPath)}" already exists here. Overwrite?`;
       pendingPaste = async () => {
-        await doPaste(destPath, true);
+        item.overwrite = true;
+        await doPasteOne(item);
+        pasteIndex++;
+        await processNextPasteItem();
       };
       showOverwriteDialog = true;
       return;
     }
 
-    await doPaste(destPath, false);
+    await doPasteOne(item);
+    pasteIndex++;
+    await processNextPasteItem();
   }
 
-  async function doPaste(destPath, overwrite) {
-    const entry = clipboard?.entry;
-    if (!entry) return;
+  async function doPasteOne({ entry, destPath, overwrite }) {
     try {
       const api = window.electronAPI || {};
-      if (clipboard.op === 'cut') {
+      if (clipboard?.op === 'cut') {
         let res;
         if (typeof api.moveItems === 'function') {
           res = await api.moveItems([{ src: entry.path, dest: destPath, overwrite }]);
         } else if (typeof api.pasteItems === 'function') {
-          // Backward-compat shim: route via pasteItems with op 'cut'
           res = await api.pasteItems([{ src: entry.path, dest: destPath, overwrite }], 'cut');
         } else {
           throw new Error('Paste failed: backend move API not available');
@@ -489,31 +706,15 @@
         if (typeof api.copyItems === 'function') {
           res = await api.copyItems([{ src: entry.path, dest: destPath, overwrite }]);
         } else if (typeof api.pasteItems === 'function') {
-          // Backward-compat shim: route via pasteItems with op 'copy'
           res = await api.pasteItems([{ src: entry.path, dest: destPath, overwrite }], 'copy');
         } else {
           throw new Error('Paste failed: backend copy API not available');
         }
         if (!res?.success) throw new Error(res?.results?.[0]?.error || 'Copy failed');
       }
-
-      // Reload destination dir and select pasted item
-      await loadDirectory(currentPath, false);
-      const pastedIndex = items.findIndex(i => i.path === destPath);
-      if (pastedIndex !== -1) {
-        selectedIndex = pastedIndex;
-        rememberIndex[currentPath] = pastedIndex;
-      }
-
-      // Clear clipboard and visual marks
-      clipboard = null;
-      cutMarkedPaths = new Set();
-
-      // Minimal feedback after paste
-      setStatus(`Pasted: ${path.basename(destPath)}`);
     } catch (e) {
-      console.error('Paste failed:', e);
-      alert(`Paste failed: ${e.message}`);
+      console.error('Paste failed for', entry.path, e);
+      alert(`Paste failed for ${entry.name}: ${e.message}`);
     }
   }
 
@@ -537,8 +738,15 @@
   }
 
   function handleSelect(index) {
+    // Plain selection clears multi-select and VISUAL mode
     selectedIndex = index;
     rememberIndex[currentPath] = index;
+    lastFocusedPath = items[index]?.path || null;
+    if (selectedPaths.size > 0 || mode === 'VISUAL') {
+      selectedPaths = new Set();
+      visualAnchorPath = null;
+      mode = 'NORMAL';
+    }
   }
 
   function handleNavigate(newPath) {
@@ -571,8 +779,93 @@
     }
   }
 
+  // ======== VISUAL / Multi-selection helpers ========
+  function findIndexByPath(p) {
+    if (!p) return -1;
+    return items.findIndex(i => i.path === p);
+  }
+
+  function clearMultiSelection() {
+    selectedPaths = new Set();
+    visualAnchorPath = null;
+    if (mode === 'VISUAL') mode = 'NORMAL';
+  }
+
+  function enterVisualMode() {
+    const curPath = items[selectedIndex]?.path;
+    if (!curPath) return;
+    mode = 'VISUAL';
+    visualAnchorPath = visualAnchorPath || curPath;
+    extendSelectionTo(selectedIndex);
+  }
+
+  function extendSelectionTo(targetIndex) {
+    const anchorIdx = findIndexByPath(visualAnchorPath) ?? selectedIndex;
+    const a = Math.max(0, Math.min(anchorIdx, targetIndex));
+    const b = Math.min(items.length - 1, Math.max(anchorIdx, targetIndex));
+    const next = new Set();
+    for (let i = a; i <= b; i++) {
+      const p = items[i]?.path;
+      if (p) next.add(p);
+    }
+    selectedPaths = next;
+  }
+
+  function handleToggleSelect(listIndex) {
+    const item = listItems[listIndex];
+    if (!item) return;
+    const p = item.path;
+    const next = new Set(selectedPaths);
+
+    // If this is the first Ctrl/Cmd-click and we currently have a single primary selection,
+    // seed the multi-select with the currently focused item so X + Y are both selected.
+    const primaryPath = items[selectedIndex]?.path || null;
+    if (next.size === 0 && primaryPath && primaryPath !== p) {
+      next.add(primaryPath);
+      if (!visualAnchorPath) visualAnchorPath = primaryPath;
+    }
+
+    if (next.has(p)) next.delete(p); else next.add(p);
+
+    selectedPaths = next;
+    lastFocusedPath = p;
+
+    // Auto-enter/exit VISUAL
+    if (selectedPaths.size >= 2) {
+      mode = 'VISUAL';
+    } else if (selectedPaths.size <= 1 && mode === 'VISUAL') {
+      // Keep cursor on the focused item and drop back to NORMAL
+      mode = 'NORMAL';
+    }
+
+    // Ensure primary cursor follows focus
+    const idx = findIndexByPath(p);
+    if (idx !== -1) {
+      selectedIndex = idx;
+      rememberIndex[currentPath] = idx;
+    }
+  }
+
+  function handleRangeSelect(listIndex) {
+    const item = listItems[listIndex];
+    if (!item) return;
+    const targetPath = item.path;
+    const anchorPath = (mode === 'VISUAL' && visualAnchorPath) || lastFocusedPath || items[selectedIndex]?.path || targetPath;
+    const anchorIdx = findIndexByPath(anchorPath);
+    const targetIdx = findIndexByPath(targetPath);
+    if (anchorIdx === -1 || targetIdx === -1) return;
+    visualAnchorPath = anchorPath;
+    mode = 'VISUAL';
+    extendSelectionTo(targetIdx);
+    selectedIndex = targetIdx;
+    rememberIndex[currentPath] = selectedIndex;
+    lastFocusedPath = targetPath;
+  }
+
   // Rename functions
   function startRename() {
+    // Disable rename while in VISUAL (multi-selection)
+    if (mode === 'VISUAL' || (selectedPaths && selectedPaths.size > 1)) return;
     if (items[selectedIndex]) {
       renamingIndex = selectedIndex;
       originalName = items[selectedIndex].name;
@@ -619,31 +912,62 @@
     mode = 'NORMAL';
   }
 
-  // Delete functions
+  // Delete functions (single or multi)
   function startDelete() {
-    if (items[selectedIndex]) {
-      deleteTarget = items[selectedIndex];
-      showDeleteDialog = true;
+    // Build targets from multi-selection if present, otherwise single selected
+    let targets = [];
+    if (selectedPaths && selectedPaths.size > 1) {
+      targets = items.filter(it => selectedPaths.has(it.path)).map(it => ({ path: it.path, name: it.name, isDirectory: it.isDirectory }));
+    } else if (items[selectedIndex]) {
+      const it = items[selectedIndex];
+      targets = [{ path: it.path, name: it.name, isDirectory: it.isDirectory }];
     }
+    if (targets.length === 0) return;
+    deleteTargets = targets;
+    showDeleteDialog = true;
   }
 
   async function confirmDelete() {
-    if (!deleteTarget) return;
+    if (!deleteTargets || deleteTargets.length === 0) return;
 
-    const result = await window.electronAPI.delete(deleteTarget.path, deleteTarget.isDirectory);
+    try {
+      let ok = true;
+      let failed = 0;
+      if (deleteTargets.length === 1) {
+        const t = deleteTargets[0];
+        const res = await window.electronAPI.delete(t.path, t.isDirectory);
+        ok = !!res?.success;
+        if (!ok) failed = 1;
+      } else if (typeof window.electronAPI.deleteMany === 'function') {
+        const res = await window.electronAPI.deleteMany(deleteTargets.map(t => ({ path: t.path, isDirectory: t.isDirectory })));
+        ok = !!res?.success;
+        failed = (res?.results || []).filter(r => !r.success).length;
+      } else {
+        // Fallback: sequential single deletes
+        for (const t of deleteTargets) {
+          const res = await window.electronAPI.delete(t.path, t.isDirectory);
+          if (!res?.success) failed++;
+        }
+        ok = failed === 0;
+      }
 
-    if (result.success) {
       // Reload directory
       await loadDirectory(currentPath, false);
-      // Adjust selection if needed
-      if (selectedIndex >= items.length) {
-        selectedIndex = items.length - 1;
-      }
-      if (selectedIndex < 0) selectedIndex = 0;
+      // Clear multi-selection after delete
+      clearMultiSelection();
+
+      // Adjust selection bounds
+      if (selectedIndex >= items.length) selectedIndex = Math.max(0, items.length - 1);
       rememberIndex[currentPath] = selectedIndex;
-    } else {
-      console.error('Delete failed:', result.error);
-      alert(`Failed to delete: ${result.error}`);
+
+      if (failed > 0) {
+        alert(`Deleted ${deleteTargets.length - failed} of ${deleteTargets.length} items. ${failed} failed.`);
+      } else {
+        setStatus(deleteTargets.length === 1 ? `Deleted: ${deleteTargets[0].name}` : `Deleted ${deleteTargets.length} items`);
+      }
+    } catch (e) {
+      console.error('Delete failed:', e);
+      alert(`Failed to delete: ${e.message}`);
     }
 
     cancelDelete();
@@ -651,7 +975,7 @@
 
   function cancelDelete() {
     showDeleteDialog = false;
-    deleteTarget = null;
+    deleteTargets = [];
   }
 
   // Overwrite dialog handlers
@@ -666,6 +990,15 @@
 
   function cancelOverwrite() {
     showOverwriteDialog = false;
+    if (pendingPaste) {
+      // If we are in a paste sequence and user cancels overwrite, skip this item and continue
+      pendingPaste = null;
+      if (pasteQueue && pasteIndex < pasteQueue.length) {
+        pasteIndex++;
+        processNextPasteItem();
+        return;
+      }
+    }
     pendingPaste = null;
   }
 
@@ -773,6 +1106,8 @@
           {renameValue}
           onNavigate={handleNavigate}
           onSelect={(i) => handleSelect(mode === 'FILTER' ? viewIndexMap[i] : i)}
+          onToggleSelect={(i) => handleToggleSelect(i)}
+          onRangeSelect={(i) => handleRangeSelect(i)}
           onRenameChange={handleRenameChange}
           onRenameSubmit={submitRename}
           onRenameCancel={cancelRename}
@@ -780,6 +1115,7 @@
           centerToken={centerToken}
           sortState={sortState}
           onSort={handleSortClick}
+          selectedSet={selectedSetForList}
         />
       {/if}
     </div>
@@ -806,17 +1142,19 @@
   />
 
   <!-- Keybinds Bar -->
-  <KeybindsBar on:openHelp={() => showHelp = true} />
+  <KeybindsBar on:openHelp={() => showHelp = true} {mode} {platform} />
 </div>
 
 <!-- Help Modal -->
 <HelpModal visible={showHelp} platform={platform} on:close={() => showHelp = false} />
 
 <!-- Delete Confirmation Dialog -->
-{#if showDeleteDialog && deleteTarget}
+{#if showDeleteDialog && deleteTargets && deleteTargets.length > 0}
   <ConfirmDialog
-    title="Delete {deleteTarget.isDirectory ? 'Folder' : 'File'}"
-    message="Are you sure you want to delete '{deleteTarget.name}'?{deleteTarget.isDirectory ? ' This will delete all contents.' : ''}"
+    title={deleteTargets.length === 1 ? `Delete ${deleteTargets[0].isDirectory ? 'Folder' : 'File'}` : `Delete ${deleteTargets.length} items`}
+    message={deleteTargets.length === 1
+      ? `Are you sure you want to delete '${deleteTargets[0].name}'?${deleteTargets[0].isDirectory ? ' This will delete all contents.' : ''}`
+      : `Are you sure you want to delete ${deleteTargets.length} items? This cannot be undone.`}
     confirmText="Delete"
     cancelText="Cancel"
     danger={true}

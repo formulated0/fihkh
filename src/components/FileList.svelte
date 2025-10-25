@@ -17,6 +17,11 @@
   export let cutMarkedPaths = new Set();
   // One-shot centering trigger: when this number changes, center selected item
   export let centerToken = 0;
+  // Multi-selection: set of selected indices (optional, in the coordinates of this list)
+  export let selectedSet = new Set();
+  // Multi-select handlers (optional)
+  export let onToggleSelect; // function(index)
+  export let onRangeSelect; // function(index)
 
   let itemElements = [];
   let listContainer;
@@ -98,15 +103,25 @@
     return iconMap[ext] || "📄";
   }
 
-  function handleClick(index) {
+  function handleClick(event, index) {
     // Ignore list clicks while renaming to avoid unintended blurs/navigations
     if (renamingIndex >= 0) return;
-    onSelect(index);
+    const isCtrl = event.ctrlKey || event.metaKey;
+    const isShift = event.shiftKey;
+    if (isShift && typeof onRangeSelect === 'function') {
+      onRangeSelect(index);
+    } else if (isCtrl && typeof onToggleSelect === 'function') {
+      onToggleSelect(index);
+    } else {
+      onSelect(index);
+    }
   }
 
   function handleDoubleClick(item) {
     // While renaming (INSERT mode), do not navigate/open on double-click
     if (renamingIndex >= 0) return;
+    // If multi-selection is active (>1), avoid opening on double-click
+    if (selectedSet && selectedSet.size > 1) return;
     if (item.isDirectory) {
       onNavigate(item.path);
     } else {
@@ -165,10 +180,10 @@
       <div
         bind:this={itemElements[index]}
         class="px-4 py-1.5 flex items-center cursor-pointer"
-        class:file-item-selected={index === selectedIndex}
-        class:file-item-hover={index !== selectedIndex}
+        class:file-item-selected={(selectedSet && selectedSet.size > 0 ? selectedSet.has(index) : index === selectedIndex)}
+        class:file-item-hover={!(selectedSet && selectedSet.size > 0 ? selectedSet.has(index) : index === selectedIndex)}
         class:opacity-50={cutMarkedPaths && cutMarkedPaths.has(item.path)}
-        on:click={() => handleClick(index)}
+        on:click={(e) => handleClick(e, index)}
         on:dblclick={() => handleDoubleClick(item)}
         role="button"
         tabindex="-1"
@@ -178,8 +193,8 @@
           <span>{getIcon(item)}</span>
           <span
             class="text-tui-sm"
-            class:text-white={index === selectedIndex}
-            class:text-terminal-fg-dimmer={index !== selectedIndex}
+            class:text-white={(selectedSet && selectedSet.size > 0 ? selectedSet.has(index) : index === selectedIndex)}
+            class:text-terminal-fg-dimmer={!(selectedSet && selectedSet.size > 0 ? selectedSet.has(index) : index === selectedIndex)}
           >
             {item.isDirectory ? "d" : "f"}
           </span>
@@ -208,8 +223,8 @@
         <!-- Size -->
         <div
           class="w-24 text-right text-tui-sm"
-          class:text-white={index === selectedIndex}
-          class:text-terminal-fg-dim={index !== selectedIndex}
+          class:text-white={(selectedSet && selectedSet.size > 0 ? selectedSet.has(index) : index === selectedIndex)}
+          class:text-terminal-fg-dim={!(selectedSet && selectedSet.size > 0 ? selectedSet.has(index) : index === selectedIndex)}
         >
           {formatSize(item.size)}
         </div>
@@ -217,8 +232,8 @@
         <!-- Modified Date -->
         <div
           class="w-32 text-right text-tui-sm"
-          class:text-white={index === selectedIndex}
-          class:text-terminal-fg-dim={index !== selectedIndex}
+          class:text-white={(selectedSet && selectedSet.size > 0 ? selectedSet.has(index) : index === selectedIndex)}
+          class:text-terminal-fg-dim={!(selectedSet && selectedSet.size > 0 ? selectedSet.has(index) : index === selectedIndex)}
         >
           {formatDate(item.modified)}
         </div>

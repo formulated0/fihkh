@@ -252,6 +252,34 @@ ipcMain.handle('fs:delete', async (event, itemPath, isDirectory) => {
   }
 });
 
+/**
+ * Delete many files or directories (batch)
+ * items: Array<{ path: string, isDirectory: boolean }>
+ */
+ipcMain.handle('fs:deleteMany', async (event, items) => {
+  const results = [];
+  for (const it of items || []) {
+    const p = it?.path;
+    const isDir = !!it?.isDirectory;
+    if (!p) {
+      results.push({ success: false, error: 'Invalid path' });
+      continue;
+    }
+    try {
+      if (isDir) {
+        await fs.rm(p, { recursive: true, force: true });
+      } else {
+        await fs.unlink(p);
+      }
+      results.push({ path: p, success: true });
+    } catch (error) {
+      results.push({ path: p, success: false, error: error.message });
+    }
+  }
+  const allOk = results.every(r => r.success);
+  return { success: allOk, results };
+});
+
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
   const k = 1024;

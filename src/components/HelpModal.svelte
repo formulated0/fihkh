@@ -57,7 +57,7 @@
       <!-- Body -->
       <div class="content custom-scrollbar">
         {#if grouped.length === 0}
-          <div class="empty">No matches</div>
+          <div class="empty">no matches</div>
         {:else}
           {#each grouped as group}
             <div class="group">
