@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readFile: (filePath, encoding) => ipcRenderer.invoke('fs:readFile', filePath, encoding),
   getHomeDir: () => ipcRenderer.invoke('fs:getHomeDir'),
   exists: (itemPath) => ipcRenderer.invoke('fs:exists', itemPath),
+  getDevices: () => ipcRenderer.invoke('fs:getDevices'),
+  rename: (oldPath, newName) => ipcRenderer.invoke('fs:rename', oldPath, newName),
+  delete: (itemPath, isDirectory) => ipcRenderer.invoke('fs:delete', itemPath, isDirectory),
   
   // Platform info
   platform: process.platform

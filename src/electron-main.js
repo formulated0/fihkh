@@ -211,6 +211,47 @@ ipcMain.handle('fs:getDevices', async () => {
   }
 });
 
+/**
+ * Rename a file or directory
+ */
+ipcMain.handle('fs:rename', async (event, oldPath, newName) => {
+  try {
+    const dir = path.dirname(oldPath);
+    const newPath = path.join(dir, newName);
+    
+    // Check if new name already exists
+    try {
+      await fs.access(newPath);
+      return { success: false, error: 'A file or folder with that name already exists' };
+    } catch {
+      // Good, doesn't exist
+    }
+    
+    await fs.rename(oldPath, newPath);
+    return { success: true, newPath };
+  } catch (error) {
+    console.error('Error renaming:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * Delete a file or directory
+ */
+ipcMain.handle('fs:delete', async (event, itemPath, isDirectory) => {
+  try {
+    if (isDirectory) {
+      await fs.rm(itemPath, { recursive: true, force: true });
+    } else {
+      await fs.unlink(itemPath);
+    }
+    return { success: true };
+  } catch (error) {
+    console.error('Error deleting:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
   const k = 1024;

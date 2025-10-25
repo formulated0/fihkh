@@ -6,6 +6,7 @@
   import PaneResizer from './components/PaneResizer.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import KeybindsBar from './components/KeybindsBar.svelte';
+  import ConfirmDialog from './components/ConfirmDialog.svelte';
   
   let currentPath = '';
   let items = [];
@@ -18,6 +19,15 @@
   let history = [];
   let historyIndex = -1;
   let rememberIndex = {}; // Remember selected index for each directory
+
+  // Rename state
+  let renamingIndex = -1;
+  let renameValue = '';
+  let originalName = '';
+
+  // Delete confirmation
+  let showDeleteDialog = false;
+  let deleteTarget = null;
 
   // Pane widths (in pixels)
   let sidebarWidth = 200;
@@ -72,9 +82,15 @@
   }
 
   function handleKeyDown(event) {
-    // Ignore keys when in INSERT mode (for future text inputs)
-    if (mode === 'INSERT') return;
+    // In INSERT mode, only handle Escape
+    if (mode === 'INSERT') {
+      if (event.key === 'Escape') {
+        cancelRename();
+      }
+      return;
+    }
 
+    // In NORMAL mode
     switch(event.key) {
       // Navigation: j/k or Arrow keys
       case 'j':
@@ -116,20 +132,29 @@
         goToParentDirectory();
         break;
       
-      // Jump to top/bottom
-      case 'g':
-        if (event.shiftKey) {
-          // Shift+G = bottom
-          event.preventDefault();
-          selectedIndex = items.length - 1;
-          rememberIndex[currentPath] = selectedIndex;
-        }
-        break;
-      
+      // Jump to bottom
       case 'G':
         event.preventDefault();
         selectedIndex = items.length - 1;
         rememberIndex[currentPath] = selectedIndex;
+        break;
+      
+      // Rename
+      case 'i':
+        event.preventDefault();
+        startRename();
+        break;
+      
+      case 'F2':
+        event.preventDefault();
+        startRename();
+        break;
+      
+      // Delete
+      case 'd':
+      case 'Delete':
+        event.preventDefault();
+        startDelete();
         break;
     }
   }
@@ -174,6 +199,89 @@
     }
   }
 
+  // Rename functions
+  function startRename() {
+    if (items[selectedIndex]) {
+      renamingIndex = selectedIndex;
+      originalName = items[selectedIndex].name;
+      renameValue = originalName;
+      mode = 'INSERT';
+    }
+  }
+
+  function handleRenameChange(newValue) {
+    renameValue = newValue;
+  }
+
+  async function submitRename() {
+    if (!renameValue || renameValue === originalName) {
+      cancelRename();
+      return;
+    }
+
+    const item = items[renamingIndex];
+    const result = await window.electronAPI.rename(item.path, renameValue);
+
+    if (result.success) {
+      // Reload directory to show changes
+      await loadDirectory(currentPath, false);
+      // Find and select the renamed item
+      const newIndex = items.findIndex(i => i.path === result.newPath);
+      if (newIndex !== -1) {
+        selectedIndex = newIndex;
+        rememberIndex[currentPath] = newIndex;
+      }
+    } else {
+      // Show error (for now, just log it)
+      console.error('Rename failed:', result.error);
+      alert(`Failed to rename: ${result.error}`);
+    }
+
+    cancelRename();
+  }
+
+  function cancelRename() {
+    renamingIndex = -1;
+    renameValue = '';
+    originalName = '';
+    mode = 'NORMAL';
+  }
+
+  // Delete functions
+  function startDelete() {
+    if (items[selectedIndex]) {
+      deleteTarget = items[selectedIndex];
+      showDeleteDialog = true;
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+
+    const result = await window.electronAPI.delete(deleteTarget.path, deleteTarget.isDirectory);
+
+    if (result.success) {
+      // Reload directory
+      await loadDirectory(currentPath, false);
+      // Adjust selection if needed
+      if (selectedIndex >= items.length) {
+        selectedIndex = items.length - 1;
+      }
+      if (selectedIndex < 0) selectedIndex = 0;
+      rememberIndex[currentPath] = selectedIndex;
+    } else {
+      console.error('Delete failed:', result.error);
+      alert(`Failed to delete: ${result.error}`);
+    }
+
+    cancelDelete();
+  }
+
+  function cancelDelete() {
+    showDeleteDialog = false;
+    deleteTarget = null;
+  }
+
   function handleSidebarResize(event) {
     const newWidth = event.detail.clientX;
     if (newWidth >= 150 && newWidth <= 400) {
@@ -207,7 +315,7 @@
           on:click={navigateBack}
           disabled={!canGoBack}
           title="Back"
-		  tabindex="-1"
+          tabindex="-1"
         >
           ◀
         </button>
@@ -217,7 +325,7 @@
           on:click={navigateForward}
           disabled={!canGoForward}
           title="Forward"
-		  tabindex="-1"
+          tabindex="-1"
         >
           ▶
         </button>
@@ -260,9 +368,14 @@
       {:else}
         <FileList 
           {items} 
-          {selectedIndex} 
+          {selectedIndex}
+          {renamingIndex}
+          {renameValue}
           onNavigate={handleNavigate}
           onSelect={handleSelect}
+          onRenameChange={handleRenameChange}
+          onRenameSubmit={submitRename}
+          onRenameCancel={cancelRename}
         />
       {/if}
     </div>
@@ -290,6 +403,19 @@
   <!-- Keybinds Bar -->
   <KeybindsBar />
 </div>
+
+<!-- Delete Confirmation Dialog -->
+{#if showDeleteDialog && deleteTarget}
+  <ConfirmDialog
+    title="Delete {deleteTarget.isDirectory ? 'Folder' : 'File'}"
+    message="Are you sure you want to delete '{deleteTarget.name}'?{deleteTarget.isDirectory ? ' This will delete all contents.' : ''}"
+    confirmText="Delete"
+    cancelText="Cancel"
+    danger={true}
+    on:confirm={confirmDelete}
+    on:cancel={cancelDelete}
+  />
+{/if}
 
 <style>
   .nav-arrow {
