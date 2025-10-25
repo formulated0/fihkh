@@ -2,6 +2,7 @@
   export let mode = 'NORMAL';
   export let selectedFile = '';
   export let itemCount = 0;
+  export let statusMessage = '';
 
   // Get mode color
   $: modeColor = {
@@ -27,6 +28,12 @@
   </div>
 
   <div class="flex items-center gap-4 text-terminal-fg-dim">
+    <!-- Status message (minimal feedback) -->
+    {#if statusMessage}
+      <span class="text-terminal-fg">{statusMessage}</span>
+      <span class="text-terminal-border">│</span>
+    {/if}
+
     <!-- Item Count -->
     <span>
       {itemCount} {itemCount === 1 ? 'item' : 'items'}

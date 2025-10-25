@@ -14,6 +14,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getDevices: () => ipcRenderer.invoke('fs:getDevices'),
   rename: (oldPath, newName) => ipcRenderer.invoke('fs:rename', oldPath, newName),
   delete: (itemPath, isDirectory) => ipcRenderer.invoke('fs:delete', itemPath, isDirectory),
+  copyItems: (pairs) => ipcRenderer.invoke('fs:copyItems', pairs),
+  moveItems: (pairs) => ipcRenderer.invoke('fs:moveItems', pairs),
+  // Backward-compatible: pasteItems routes to copy/move in main
+  pasteItems: (payloadOrItems, opMaybe) => ipcRenderer.invoke('fs:pasteItems', payloadOrItems, opMaybe),
   
   // Platform info
   platform: process.platform

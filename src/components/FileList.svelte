@@ -10,6 +10,8 @@
   export let onRenameChange;
   export let onRenameSubmit;
   export let onRenameCancel;
+  // Paths that are marked as cut (to render semi-transparent)
+  export let cutMarkedPaths = new Set();
 
   let itemElements = [];
   let listContainer;
@@ -139,6 +141,7 @@
         class="px-4 py-1.5 flex items-center cursor-pointer"
         class:file-item-selected={index === selectedIndex}
         class:file-item-hover={index !== selectedIndex}
+        class:opacity-50={cutMarkedPaths && cutMarkedPaths.has(item.path)}
         on:click={() => handleClick(index)}
         on:dblclick={() => handleDoubleClick(item)}
         role="button"

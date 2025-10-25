@@ -33,6 +33,31 @@
   let sidebarWidth = 200;
   let previewWidth = 400;
 
+  // Clipboard state for Cut/Copy/Paste (single item for now)
+  let clipboard = null; // { op: 'copy'|'cut', entry: { path, name, isDirectory }, sourceDir: string }
+  let cutMarkedPaths = new Set();
+
+  // Minimal status feedback (shown in StatusBar)
+  let statusMessage = '';
+  let statusTimer = null;
+  function setStatus(message, ms = 2000) {
+    statusMessage = message;
+    if (statusTimer) {
+      clearTimeout(statusTimer);
+    }
+    if (ms > 0) {
+      statusTimer = setTimeout(() => {
+        statusMessage = '';
+        statusTimer = null;
+      }, ms);
+    }
+  }
+
+  // Overwrite confirmation dialog (reuses ConfirmDialog)
+  let showOverwriteDialog = false;
+  let overwriteMessage = '';
+  let pendingPaste = null; // function to run on confirm
+
   onMount(async () => {
     // Get home directory on startup
     const homeResult = await window.electronAPI.getHomeDir();
@@ -48,9 +73,9 @@
   async function loadDirectory(dirPath, addToHistory = true) {
     loading = true;
     error = null;
-    
+
     const result = await window.electronAPI.readDir(dirPath);
-    
+
     if (result.success) {
       // Sort: directories first, then files, alphabetically
       items = result.items.sort((a, b) => {
@@ -58,14 +83,14 @@
         if (!a.isDirectory && b.isDirectory) return 1;
         return a.name.localeCompare(b.name);
       });
-      
+
       // Restore remembered position or default to 0
       selectedIndex = rememberIndex[dirPath] ?? 0;
       if (selectedIndex >= items.length) selectedIndex = 0;
-      
+
       const oldPath = currentPath;
       currentPath = dirPath;
-      
+
       // Update history
       if (addToHistory) {
         // Remove any forward history
@@ -77,7 +102,7 @@
       error = result.error;
       items = [];
     }
-    
+
     loading = false;
   }
 
@@ -87,6 +112,40 @@
       if (event.key === 'Escape') {
         cancelRename();
       }
+      return;
+    }
+
+    // Escape in NORMAL mode: cancel pending cut, if any
+    if (event.key === 'Escape') {
+      if (clipboard && clipboard.op === 'cut') {
+        event.preventDefault();
+        clipboard = null;
+        cutMarkedPaths = new Set();
+        setStatus('Cut cancelled');
+        return;
+      }
+      // If no pending cut, let Esc fall through (currently no other action in NORMAL)
+    }
+
+    // Normalize ctrl combinations for CCP
+    const isCtrlC = (event.key === 'c' || event.key === 'C') && (event.ctrlKey || event.metaKey);
+    const isCtrlX = (event.key === 'x' || event.key === 'X') && (event.ctrlKey || event.metaKey);
+    const isCtrlV = (event.key === 'v' || event.key === 'V') && (event.ctrlKey || event.metaKey);
+
+    // CCP keybinds (both single keys and Ctrl variants)
+    if (event.key === 'c' || event.key === 'C' || isCtrlC) {
+      event.preventDefault();
+      startCopy();
+      return;
+    }
+    if (event.key === 'x' || event.key === 'X' || isCtrlX) {
+      event.preventDefault();
+      startCut();
+      return;
+    }
+    if (event.key === 'p' || event.key === 'P' || isCtrlV) {
+      event.preventDefault();
+      pasteClipboard();
       return;
     }
 
@@ -156,6 +215,129 @@
         event.preventDefault();
         startDelete();
         break;
+    }
+  }
+
+  // ======== CCP Helpers & Actions ========
+  function parseNameParts(name) {
+    const lastDot = name.lastIndexOf('.');
+    if (lastDot > 0 && lastDot !== name.length - 1) {
+      return { base: name.slice(0, lastDot), ext: name.slice(lastDot) };
+    }
+    return { base: name, ext: '' };
+  }
+
+  async function uniqueCopyName(dir, originalName) {
+    // Always start with "name 1" as per spec
+    const { base, ext } = parseNameParts(originalName);
+    let n = 1;
+    while (true) {
+      const candidate = `${base} ${n}${ext}`;
+      const candidatePath = path.join(dir, candidate);
+      const existsRes = await window.electronAPI.exists(candidatePath);
+      if (!existsRes.success || !existsRes.exists) return candidate;
+      n++;
+    }
+  }
+
+  function startCopy() {
+    const entry = items[selectedIndex];
+    if (!entry) return;
+    clipboard = { op: 'copy', entry, sourceDir: currentPath };
+    // Clear visual cut marks if switching op
+    cutMarkedPaths = new Set();
+    setStatus(`Copied: ${entry.name}`);
+  }
+
+  function startCut() {
+    const entry = items[selectedIndex];
+    if (!entry) return;
+    clipboard = { op: 'cut', entry, sourceDir: currentPath };
+    cutMarkedPaths = new Set([entry.path]);
+    setStatus(`Cut: ${entry.name} (Esc to cancel)`);
+  }
+
+  async function pasteClipboard() {
+    if (!clipboard) return;
+    const entry = clipboard.entry;
+    const destDir = currentPath;
+
+    // Same-dir cut to same name is a no-op
+    if (clipboard.op === 'cut' && destDir === clipboard.sourceDir) {
+      // nothing to do
+      clipboard = null;
+      cutMarkedPaths = new Set();
+      return;
+    }
+
+    let targetName = entry.name;
+    if (clipboard.op === 'copy' && destDir === clipboard.sourceDir) {
+      targetName = await uniqueCopyName(destDir, entry.name);
+    }
+
+    let destPath = path.join(destDir, targetName);
+
+    // Check conflicts (for different dir, or copy same dir edge cases already handled)
+    const existsRes = await window.electronAPI.exists(destPath);
+    if (existsRes.success && existsRes.exists) {
+      // Ask to overwrite
+      overwriteMessage = `An item named "${targetName}" already exists here. Overwrite?`;
+      pendingPaste = async () => {
+        await doPaste(destPath, true);
+      };
+      showOverwriteDialog = true;
+      return;
+    }
+
+    await doPaste(destPath, false);
+  }
+
+  async function doPaste(destPath, overwrite) {
+    const entry = clipboard?.entry;
+    if (!entry) return;
+    try {
+      const api = window.electronAPI || {};
+      if (clipboard.op === 'cut') {
+        let res;
+        if (typeof api.moveItems === 'function') {
+          res = await api.moveItems([{ src: entry.path, dest: destPath, overwrite }]);
+        } else if (typeof api.pasteItems === 'function') {
+          // Backward-compat shim: route via pasteItems with op 'cut'
+          res = await api.pasteItems([{ src: entry.path, dest: destPath, overwrite }], 'cut');
+        } else {
+          throw new Error('Paste failed: backend move API not available');
+        }
+        if (!res?.success) throw new Error(res?.results?.[0]?.error || 'Move failed');
+      } else {
+        let res;
+        if (typeof api.copyItems === 'function') {
+          res = await api.copyItems([{ src: entry.path, dest: destPath, overwrite }]);
+        } else if (typeof api.pasteItems === 'function') {
+          // Backward-compat shim: route via pasteItems with op 'copy'
+          res = await api.pasteItems([{ src: entry.path, dest: destPath, overwrite }], 'copy');
+        } else {
+          throw new Error('Paste failed: backend copy API not available');
+        }
+        if (!res?.success) throw new Error(res?.results?.[0]?.error || 'Copy failed');
+      }
+
+      // Reload destination dir and select pasted item
+      await loadDirectory(currentPath, false);
+      const pastedIndex = items.findIndex(i => i.path === destPath);
+      if (pastedIndex !== -1) {
+        selectedIndex = pastedIndex;
+        rememberIndex[currentPath] = pastedIndex;
+      }
+
+      // Clear clipboard and visual marks
+      clipboard = null;
+      cutMarkedPaths = new Set();
+
+      // Minimal feedback after paste
+      setStatus(`Pasted: ${path.basename(destPath)}`);
+    } catch (e) {
+      console.error('Paste failed:', e);
+      alert(`Paste failed: ${e.message}`);
     }
   }
 
@@ -282,6 +464,21 @@
     deleteTarget = null;
   }
 
+  // Overwrite dialog handlers
+  async function confirmOverwrite() {
+    showOverwriteDialog = false;
+    if (pendingPaste) {
+      const fn = pendingPaste;
+      pendingPaste = null;
+      await fn();
+    }
+  }
+
+  function cancelOverwrite() {
+    showOverwriteDialog = false;
+    pendingPaste = null;
+  }
+
   function handleSidebarResize(event) {
     const newWidth = event.detail.clientX;
     if (newWidth >= 150 && newWidth <= 400) {
@@ -376,6 +573,7 @@
           onRenameChange={handleRenameChange}
           onRenameSubmit={submitRename}
           onRenameCancel={cancelRename}
+          {cutMarkedPaths}
         />
       {/if}
     </div>
@@ -398,6 +596,7 @@
     {mode}
     selectedFile={items[selectedIndex]?.name || ''} 
     itemCount={items.length}
+    statusMessage={statusMessage}
   />
 
   <!-- Keybinds Bar -->
@@ -414,6 +613,19 @@
     danger={true}
     on:confirm={confirmDelete}
     on:cancel={cancelDelete}
+  />
+{/if}
+
+<!-- Overwrite Confirmation Dialog -->
+{#if showOverwriteDialog}
+  <ConfirmDialog
+    title="Overwrite"
+    message={overwriteMessage}
+    confirmText="Overwrite"
+    cancelText="Cancel"
+    danger={false}
+    on:confirm={confirmOverwrite}
+    on:cancel={cancelOverwrite}
   />
 {/if}
 

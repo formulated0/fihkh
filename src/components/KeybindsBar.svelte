@@ -5,9 +5,9 @@
     { key: 'l', desc: 'open' },
     { key: 'G', desc: 'bottom' },
     { key: 'i', desc: 'rename' },
-    { key: 'c', desc: 'copy' },
-    { key: 'x', desc: 'cut' },
-    { key: 'p', desc: 'paste' },
+    { key: 'c / C-c', desc: 'copy' },
+    { key: 'x / C-x', desc: 'cut' },
+    { key: 'p / C-v', desc: 'paste' },
     { key: 'd', desc: 'delete' },
     { key: '/', desc: 'filter' }
   ];

@@ -260,4 +260,133 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
+// ============================================
+// Copy/Move Helpers and IPC (Phase 2)
+// ============================================
+async function pathExists(p) {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function copyEntry(src, dest, { overwrite = false } = {}) {
+  // If destination exists
+  if (await pathExists(dest)) {
+    if (!overwrite) {
+      throw new Error('Destination exists');
+    }
+    // Remove existing destination
+    const st = await fs.stat(dest).catch(() => null);
+    if (st) {
+      if (st.isDirectory()) await fs.rm(dest, { recursive: true, force: true });
+      else await fs.unlink(dest);
+    }
+  }
+  // Prefer fs.cp (Node >=16.7)
+  if (typeof fs.cp === 'function') {
+    await fs.cp(src, dest, { recursive: true });
+    return;
+  }
+  // Fallback: manual copy
+  const stats = await fs.stat(src);
+  if (stats.isDirectory()) {
+    await fs.mkdir(dest, { recursive: true });
+    const entries = await fs.readdir(src, { withFileTypes: true });
+    for (const entry of entries) {
+      const s = path.join(src, entry.name);
+      const d = path.join(dest, entry.name);
+      if (entry.isDirectory()) await copyEntry(s, d, { overwrite: false });
+      else await fs.copyFile(s, d);
+    }
+  } else {
+    await fs.copyFile(src, dest);
+  }
+}
+
+async function moveEntry(src, dest, { overwrite = false } = {}) {
+  // If destination exists and overwrite requested, remove it first
+  if (await pathExists(dest)) {
+    if (!overwrite) {
+      throw new Error('Destination exists');
+    }
+    const st = await fs.stat(dest).catch(() => null);
+    if (st) {
+      if (st.isDirectory()) await fs.rm(dest, { recursive: true, force: true });
+      else await fs.unlink(dest);
+    }
+  }
+  try {
+    await fs.rename(src, dest);
+  } catch (err) {
+    if (err && err.code === 'EXDEV') {
+      // Cross-device: copy then delete
+      await copyEntry(src, dest, { overwrite: false });
+      const st = await fs.stat(src);
+      if (st.isDirectory()) await fs.rm(src, { recursive: true, force: true });
+      else await fs.unlink(src);
+    } else {
+      throw err;
+    }
+  }
+}
+
+ipcMain.handle('fs:copyItems', async (event, items /* [{src, dest, overwrite?}] */) => {
+  const results = [];
+  for (const { src, dest, overwrite } of items) {
+    try {
+      await copyEntry(src, dest, { overwrite: !!overwrite });
+      results.push({ src, dest, success: true });
+    } catch (error) {
+      results.push({ src, dest, success: false, error: error.message });
+    }
+  }
+  const allOk = results.every(r => r.success);
+  return { success: allOk, results };
+});
+
+ipcMain.handle('fs:moveItems', async (event, items /* [{src, dest, overwrite?}] */) => {
+  const results = [];
+  for (const { src, dest, overwrite } of items) {
+    try {
+      await moveEntry(src, dest, { overwrite: !!overwrite });
+      results.push({ src, dest, success: true });
+    } catch (error) {
+      results.push({ src, dest, success: false, error: error.message });
+    }
+  }
+  const allOk = results.every(r => r.success);
+  return { success: allOk, results };
+});
+
+// Backward-compatible paste handler (routes to copy or move)
+// Accepts either:
+//  - payload: { op: 'copy'|'cut', items: [{src, dest, overwrite?}] }
+//  - or (legacy) items array plus op string as second arg
+ipcMain.handle('fs:pasteItems', async (event, payloadOrItems, opMaybe) => {
+  try {
+    let op;
+    let items;
+    if (Array.isArray(payloadOrItems)) {
+      items = payloadOrItems;
+      op = opMaybe || 'copy';
+    } else if (payloadOrItems && typeof payloadOrItems === 'object') {
+      op = payloadOrItems.op || 'copy';
+      items = payloadOrItems.items || [];
+    } else {
+      return { success: false, error: 'Invalid arguments' };
+    }
+
+    if (op === 'cut' || op === 'move') {
+      return await ipcMain.invoke('fs:moveItems', items);
+    } else {
+      return await ipcMain.invoke('fs:copyItems', items);
+    }
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 console.log('Terminus main process started');
