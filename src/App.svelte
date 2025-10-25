@@ -59,6 +59,9 @@
   let clipboard = null; // { op: 'copy'|'cut', entry: { path, name, isDirectory }, sourceDir: string }
   let cutMarkedPaths = new Set();
 
+  // One-shot centering control for FileList
+  let centerToken = 0;
+
   // Minimal status feedback (shown in StatusBar)
   let statusMessage = '';
   let statusTimer = null;
@@ -462,6 +465,8 @@
       if (folderIndex !== -1) {
         selectedIndex = folderIndex;
         rememberIndex[parentPath] = folderIndex;
+        // Center the selected parent folder in view on return
+        centerToken++;
       }
     });
   }
@@ -477,8 +482,20 @@
 
   function navigateBack() {
     if (historyIndex > 0) {
+      const prevDir = currentPath; // we are currently inside this dir
       historyIndex--;
-      loadDirectory(history[historyIndex], false);
+      const targetDir = history[historyIndex];
+      loadDirectory(targetDir, false).then(() => {
+        // If we are going back to a directory that contains the previous dir, select that child
+        const childName = prevDir.split('/').pop();
+        const idx = items.findIndex(item => item.name === childName && item.isDirectory);
+        if (idx !== -1) {
+          selectedIndex = idx;
+          rememberIndex[targetDir] = idx;
+          // Center the selected child folder in the parent view
+          centerToken++;
+        }
+      });
     }
   }
 
@@ -695,6 +712,7 @@
           onRenameSubmit={submitRename}
           onRenameCancel={cancelRename}
           {cutMarkedPaths}
+          centerToken={centerToken}
         />
       {/if}
     </div>

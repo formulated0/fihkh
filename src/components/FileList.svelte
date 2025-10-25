@@ -12,6 +12,8 @@
   export let onRenameCancel;
   // Paths that are marked as cut (to render semi-transparent)
   export let cutMarkedPaths = new Set();
+  // One-shot centering trigger: when this number changes, center selected item
+  export let centerToken = 0;
 
   let itemElements = [];
   let listContainer;
@@ -19,13 +21,19 @@
   let renameInput;
 
   // Scroll selected item into view after updates
+  let lastCenterToken = 0;
   afterUpdate(() => {
-    if (selectedElement && listContainer) {
-      selectedElement.scrollIntoView({
-        block: "nearest",
-        inline: "nearest",
-      });
+    if (!selectedElement || !listContainer) return;
+
+    // If centerToken changed, center the selected item once
+    if (centerToken !== lastCenterToken) {
+      lastCenterToken = centerToken;
+      selectedElement.scrollIntoView({ block: 'center', inline: 'nearest' });
+      return;
     }
+
+    // Default behavior: keep selection in view without jumping
+    selectedElement.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   });
 
   // Focus rename input when renaming starts
