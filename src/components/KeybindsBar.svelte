@@ -1,4 +1,6 @@
 <script>
+  import { createEventDispatcher } from 'svelte';
+  const dispatch = createEventDispatcher();
   const keybinds = [
     { key: 'j/k', desc: 'up/down' },
     { key: 'h', desc: 'parent' },
@@ -26,7 +28,7 @@
   </div>
 
   <!-- Help keybind (always visible, pinned right) -->
-  <div class="flex items-center gap-1 whitespace-nowrap flex-shrink-0 ml-4">
+  <div class="flex items-center gap-1 whitespace-nowrap flex-shrink-0 ml-4 cursor-pointer" title="Help ( ? )" on:click={() => dispatch('openHelp')}>
     <span class="text-terminal-accent font-bold">?</span>
     <span class="text-terminal-fg-dim">:</span>
     <span class="text-terminal-fg">help</span>

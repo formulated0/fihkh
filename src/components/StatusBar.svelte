@@ -8,7 +8,8 @@
   $: modeColor = {
     'NORMAL': 'text-terminal-accent',
     'INSERT': 'text-terminal-success',
-    'VISUAL': 'text-terminal-info'
+    'VISUAL': 'text-terminal-info',
+    'FILTER': 'text-terminal-info'
   }[mode] || 'text-terminal-fg';
 </script>
 

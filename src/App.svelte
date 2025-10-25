@@ -7,6 +7,7 @@
   import StatusBar from './components/StatusBar.svelte';
   import KeybindsBar from './components/KeybindsBar.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
+  import HelpModal from './components/HelpModal.svelte';
   
   let currentPath = '';
   let items = [];
@@ -14,11 +15,32 @@
   let loading = true;
   let error = null;
   let mode = 'NORMAL';
+  let showHelp = false;
+  let platform = 'linux';
+
+  // Filter (live, in-directory)
+  let filterQuery = '';
+  let filterInputEl;
+  let viewCursor = 0; // selection index within filtered view when in FILTER mode
+
+  // Derived filtered view and index mapping
+  $: viewIndexMap = !filterQuery
+    ? items.map((_, idx) => idx)
+    : items
+        .map((it, idx) => ({ it, idx }))
+        .filter(({ it }) => it.name.toLowerCase().includes(filterQuery.toLowerCase()))
+        .map(({ idx }) => idx);
+  $: viewItems = viewIndexMap.map(i => items[i]);
 
   // Navigation history
   let history = [];
   let historyIndex = -1;
   let rememberIndex = {}; // Remember selected index for each directory
+
+  // View binding for FileList depending on mode
+  $: listItems = mode === 'FILTER' ? viewItems : items;
+  $: selectedIndexForList = mode === 'FILTER' ? viewCursor : selectedIndex;
+
 
   // Rename state
   let renamingIndex = -1;
@@ -59,6 +81,9 @@
   let pendingPaste = null; // function to run on confirm
 
   onMount(async () => {
+    // Platform info (for help modal key glyphs)
+    try { platform = window.electronAPI?.platform || platform; } catch {}
+
     // Get home directory on startup
     const homeResult = await window.electronAPI.getHomeDir();
     if (homeResult.success) {
@@ -107,11 +132,43 @@
   }
 
   function handleKeyDown(event) {
+    const isQuestion = event.key === '?' || (event.key === '/' && event.shiftKey);
+    // Filter mode: only Esc handled here; input handles the rest
+    if (mode === 'FILTER') {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelFilter();
+      }
+      return;
+    }
+    // If Help modal is open, only handle closing keys and swallow the rest
+    if (showHelp) {
+      if (event.key === 'Escape' || isQuestion) {
+        event.preventDefault();
+        showHelp = false;
+      }
+      return;
+    }
+
     // In INSERT mode, only handle Escape
     if (mode === 'INSERT') {
       if (event.key === 'Escape') {
         cancelRename();
       }
+      return;
+    }
+
+    // '?' opens Help in NORMAL mode
+    if (isQuestion) {
+      event.preventDefault();
+      showHelp = true;
+      return;
+    }
+
+    // '/' starts live in-directory filter
+    if (event.key === '/') {
+      event.preventDefault();
+      startFilter();
       return;
     }
 
@@ -216,6 +273,57 @@
         startDelete();
         break;
     }
+  }
+
+  // ======== Filter (in-directory) ========
+  function startFilter() {
+    mode = 'FILTER';
+    filterQuery = '';
+    // Position view cursor on current selection if it matches, else first match
+    const idxInView = viewIndexMap.indexOf(selectedIndex);
+    viewCursor = idxInView >= 0 ? idxInView : 0;
+    setTimeout(() => filterInputEl && filterInputEl.focus(), 0);
+  }
+  function cancelFilter() {
+    mode = 'NORMAL';
+    filterQuery = '';
+  }
+  function acceptFilter() {
+    // Keep current selection (mapped), just exit filter and clear query
+    mode = 'NORMAL';
+    filterQuery = '';
+  }
+  function handleFilterKeydown(event) {
+    // Navigation within filtered results and accept/cancel
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelFilter();
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      event.stopPropagation();
+      acceptFilter();
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (viewCursor < viewItems.length - 1) viewCursor++;
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (viewCursor > 0) viewCursor--;
+      return;
+    }
+  }
+  $: if (mode === 'FILTER') {
+    // Keep view cursor aligned when items or query change
+    const idx = viewIndexMap.indexOf(selectedIndex);
+    viewCursor = idx >= 0 ? idx : 0;
   }
 
   // ======== CCP Helpers & Actions ========
@@ -563,13 +671,26 @@
           Error: {error}
         </div>
       {:else}
+        {#if mode === 'FILTER'}
+          <div class="bg-terminal-bg-light px-4 py-1 border-b border-terminal-border text-terminal-fg-dim text-tui-sm flex items-center gap-2">
+            <span class="text-terminal-accent">/</span>
+            <input
+              bind:this={filterInputEl}
+              class="flex-1 bg-terminal-bg text-terminal-fg border border-terminal-border px-2 py-1 outline-none"
+              placeholder="filter…"
+              bind:value={filterQuery}
+              on:keydown={handleFilterKeydown}
+              on:click|stopPropagation
+            />
+          </div>
+        {/if}
         <FileList 
-          {items} 
-          {selectedIndex}
+          items={listItems}
+          selectedIndex={selectedIndexForList}
           {renamingIndex}
           {renameValue}
           onNavigate={handleNavigate}
-          onSelect={handleSelect}
+          onSelect={(i) => handleSelect(mode === 'FILTER' ? viewIndexMap[i] : i)}
           onRenameChange={handleRenameChange}
           onRenameSubmit={submitRename}
           onRenameCancel={cancelRename}
@@ -600,8 +721,11 @@
   />
 
   <!-- Keybinds Bar -->
-  <KeybindsBar />
+  <KeybindsBar on:openHelp={() => showHelp = true} />
 </div>
+
+<!-- Help Modal -->
+<HelpModal visible={showHelp} platform={platform} on:close={() => showHelp = false} />
 
 <!-- Delete Confirmation Dialog -->
 {#if showDeleteDialog && deleteTarget}
