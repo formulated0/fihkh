@@ -86,10 +86,14 @@
   }
 
   function handleClick(index) {
+    // Ignore list clicks while renaming to avoid unintended blurs/navigations
+    if (renamingIndex >= 0) return;
     onSelect(index);
   }
 
   function handleDoubleClick(item) {
+    // While renaming (INSERT mode), do not navigate/open on double-click
+    if (renamingIndex >= 0) return;
     if (item.isDirectory) {
       onNavigate(item.path);
     } else {
@@ -100,9 +104,13 @@
 
   function handleRenameKeydown(event) {
     if (event.key === "Enter") {
+      // Prevent Enter from bubbling to window handler (which could navigate)
+      event.stopPropagation();
       event.preventDefault();
       onRenameSubmit();
     } else if (event.key === "Escape") {
+      // Prevent Escape from bubbling as well
+      event.stopPropagation();
       event.preventDefault();
       onRenameCancel();
     }
@@ -158,6 +166,9 @@
               value={renameValue}
               on:input={(e) => onRenameChange(e.target.value)}
               on:keydown={handleRenameKeydown}
+              on:click|stopPropagation
+              on:dblclick|stopPropagation
+              on:mousedown|stopPropagation
               on:blur={onRenameCancel}
             />
           {:else}
