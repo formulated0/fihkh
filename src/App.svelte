@@ -10,6 +10,7 @@
   import HelpModal from './components/HelpModal.svelte';
   
   let currentPath = '';
+  let baseItems = [];
   let items = [];
   let selectedIndex = 0;
   let loading = true;
@@ -36,6 +37,74 @@
   let history = [];
   let historyIndex = -1;
   let rememberIndex = {}; // Remember selected index for each directory
+
+  // Sorting state (tri-state per column). When null → default (name asc, folders first)
+  let sortState = null; // { key: 'name' | 'size' | 'modified', dir: 'asc' | 'desc' } | null
+
+  function compareItems(a, b, key, dir) {
+    // Folders first
+    if (a.isDirectory && !b.isDirectory) return -1;
+    if (!a.isDirectory && b.isDirectory) return 1;
+
+    const mul = dir === 'desc' ? -1 : 1;
+    let av, bv;
+    switch (key) {
+      case 'size':
+        av = a.size ?? 0;
+        bv = b.size ?? 0;
+        if (av !== bv) return (av < bv ? -1 : 1) * mul;
+        break;
+      case 'modified':
+        av = a.modified ? new Date(a.modified).getTime() : 0;
+        bv = b.modified ? new Date(b.modified).getTime() : 0;
+        if (av !== bv) return (av < bv ? -1 : 1) * mul;
+        break;
+      case 'name':
+      default:
+        av = a.name || '';
+        bv = b.name || '';
+        if (av !== bv) return av.localeCompare(bv) * mul;
+        break;
+    }
+    // Fallback to name asc for stability
+    return a.name.localeCompare(b.name);
+  }
+
+  function sortItems(list, state) {
+    const key = state?.key || 'name';
+    const dir = state?.dir || 'asc';
+    const copy = [...list];
+    copy.sort((a, b) => compareItems(a, b, key, dir));
+    return copy;
+  }
+
+  // Handle header click to cycle sort: null → asc → desc → null
+  function handleSortClick(key) {
+    // Preserve current selection by path
+    const currentPathSel = items[selectedIndex]?.path;
+
+    if (!sortState || sortState.key !== key) {
+      sortState = { key, dir: 'asc' };
+    } else if (sortState.dir === 'asc') {
+      sortState = { key, dir: 'desc' };
+    } else {
+      sortState = null; // back to default name asc
+    }
+
+    // After sortState changes, Svelte will recompute `items`
+    // Schedule selection restoration in next microtask
+    Promise.resolve().then(() => {
+      if (!currentPathSel) return;
+      const idx = items.findIndex(i => i.path === currentPathSel);
+      if (idx !== -1) {
+        selectedIndex = idx;
+        rememberIndex[currentPath] = idx;
+      }
+    });
+  }
+
+  // Derived sorted items
+  $: items = sortItems(baseItems, sortState);
 
   // View binding for FileList depending on mode
   $: listItems = mode === 'FILTER' ? viewItems : items;
@@ -105,16 +174,12 @@
     const result = await window.electronAPI.readDir(dirPath);
 
     if (result.success) {
-      // Sort: directories first, then files, alphabetically
-      items = result.items.sort((a, b) => {
-        if (a.isDirectory && !b.isDirectory) return -1;
-        if (!a.isDirectory && b.isDirectory) return 1;
-        return a.name.localeCompare(b.name);
-      });
+      // Keep raw items; sorting is applied via derived `items` using `sortState`
+      baseItems = result.items;
 
-      // Restore remembered position or default to 0
+      // Restore remembered position or default to 0 (bounds check after sort applied)
       selectedIndex = rememberIndex[dirPath] ?? 0;
-      if (selectedIndex >= items.length) selectedIndex = 0;
+      if (selectedIndex >= baseItems.length) selectedIndex = 0;
 
       const oldPath = currentPath;
       currentPath = dirPath;
@@ -128,7 +193,7 @@
       }
     } else {
       error = result.error;
-      items = [];
+      baseItems = [];
     }
 
     loading = false;
@@ -713,6 +778,8 @@
           onRenameCancel={cancelRename}
           {cutMarkedPaths}
           centerToken={centerToken}
+          sortState={sortState}
+          onSort={handleSortClick}
         />
       {/if}
     </div>

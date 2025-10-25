@@ -10,6 +10,9 @@
   export let onRenameChange;
   export let onRenameSubmit;
   export let onRenameCancel;
+  // Sorting UI state and handler
+  export let sortState = null; // { key: 'name'|'size'|'modified', dir: 'asc'|'desc' } | null
+  export let onSort; // function(key: 'name'|'size'|'modified')
   // Paths that are marked as cut (to render semi-transparent)
   export let cutMarkedPaths = new Set();
   // One-shot centering trigger: when this number changes, center selected item
@@ -133,9 +136,24 @@
     class="bg-terminal-bg-light px-4 py-2 border-b border-terminal-border text-terminal-fg-dim text-tui-sm font-bold no-select flex"
   >
     <div class="w-12"></div>
-    <div class="flex-1">Name</div>
-    <div class="w-24 text-right">Size</div>
-    <div class="w-32 text-right">Modified</div>
+    <div class="flex-1 cursor-pointer select-none" on:click={() => onSort && onSort('name')} title="Sort by name">
+      <span>name</span>
+      {#if sortState && sortState.key === 'name'}
+        <span class="ml-1">{sortState.dir === 'asc' ? '▲' : '▼'}</span>
+      {/if}
+    </div>
+    <div class="w-24 text-right cursor-pointer select-none" on:click={() => onSort && onSort('size')} title="Sort by size">
+      <span>size</span>
+      {#if sortState && sortState.key === 'size'}
+        <span class="ml-1">{sortState.dir === 'asc' ? '▲' : '▼'}</span>
+      {/if}
+    </div>
+    <div class="w-32 text-right cursor-pointer select-none" on:click={() => onSort && onSort('modified')} title="Sort by modified time">
+      <span>modified</span>
+      {#if sortState && sortState.key === 'modified'}
+        <span class="ml-1">{sortState.dir === 'asc' ? '▲' : '▼'}</span>
+      {/if}
+    </div>
   </div>
 
   <!-- File List -->
