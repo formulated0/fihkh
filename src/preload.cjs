@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   moveItems: (pairs) => ipcRenderer.invoke('fs:moveItems', pairs),
   // Backward-compatible: pasteItems routes to copy/move in main
   pasteItems: (payloadOrItems, opMaybe) => ipcRenderer.invoke('fs:pasteItems', payloadOrItems, opMaybe),
+
+  // Recursive search
+  search: (options) => ipcRenderer.invoke('fs:search', options),
   
   // Platform info
   platform: process.platform

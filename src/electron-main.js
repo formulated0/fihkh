@@ -417,4 +417,61 @@ ipcMain.handle('fs:pasteItems', async (event, payloadOrItems, opMaybe) => {
   }
 });
 
+// ============================================
+// Recursive search (Phase 3)
+// ============================================
+ipcMain.handle('fs:search', async (event, options) => {
+  const { root, query, maxResults = 500, ignores } = options || {};
+  const q = (query || '').toLowerCase();
+  if (!root || !q) {
+    return { success: true, results: [] };
+  }
+  const defaultIgnores = new Set(['node_modules', '.git']);
+  const extraIgnores = new Set(Array.isArray(ignores) ? ignores : []);
+
+  const results = [];
+  const stack = [root];
+
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const name = entry.name;
+        // ignore dot directories/files at root of traversal and common heavy dirs
+        if (defaultIgnores.has(name) || extraIgnores.has(name)) continue;
+        const fullPath = path.join(dir, name);
+        let st;
+        try {
+          st = await fs.stat(fullPath);
+        } catch {
+          continue;
+        }
+        const isDir = st.isDirectory();
+        if (isDir) {
+          // push to stack for traversal (depth-first)
+          stack.push(fullPath);
+        }
+        if (name.toLowerCase().includes(q)) {
+          results.push({
+            name,
+            path: fullPath,
+            isDirectory: isDir,
+            isFile: st.isFile(),
+            size: st.size,
+            modified: st.mtime
+          });
+          if (results.length >= maxResults) {
+            return { success: true, results, truncated: true };
+          }
+        }
+      }
+    } catch (err) {
+      // skip directories we can't read
+      continue;
+    }
+  }
+  return { success: true, results, truncated: false };
+});
+
 console.log('Terminus main process started');

@@ -15,12 +15,21 @@
         return (item.keys || []).filter(k => k === 'delete');
       }
     }
+    // In SEARCH mode, keep the bar minimal (no operations shown while typing)
+    if (mode === 'SEARCH') {
+      return [];
+    }
     return item.keys || [];
   }
+
+  // Clean up: hide common navigation from the bar (keep in Help modal)
+  const hideCategories = new Set(['navigation']);
+  const allowIds = new Set(['copy','cut','paste','delete','visual-toggle','rename','filter','search-open']);
 
   $: visibleBinds = (allKeybinds || [])
     .filter(b => b.implemented !== false)
     .filter(b => b.mode === 'ALL' || b.mode === mode)
+    .filter(b => !hideCategories.has(b.category) && allowIds.has(b.id))
     .map(b => ({ ...b, keys: keysForMode(b, mode) }))
     .filter(b => b.keys.length > 0)
     // Choose a compact set to display in the bar (primary binds only)

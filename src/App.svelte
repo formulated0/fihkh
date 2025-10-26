@@ -8,6 +8,7 @@
   import KeybindsBar from './components/KeybindsBar.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
   import HelpModal from './components/HelpModal.svelte';
+  import PreviewPane from './components/PreviewPane.svelte';
   
   let currentPath = '';
   let baseItems = [];
@@ -28,6 +29,15 @@
   let filterQuery = '';
   let filterInputEl;
   let viewCursor = 0; // selection index within filtered view when in FILTER mode
+
+  // Search (recursive)
+  let searchQuery = '';
+  let searchInputEl;
+  let searchCursor = 0;
+  let searchResults = [];
+  let searchLoading = false;
+  let searchTruncated = false;
+  let searchTimer = null;
 
   // Derived filtered view and index mapping
   $: viewIndexMap = !filterQuery
@@ -112,8 +122,8 @@
   $: items = sortItems(baseItems, sortState);
 
   // View binding for FileList depending on mode
-  $: listItems = mode === 'FILTER' ? viewItems : items;
-  $: selectedIndexForList = mode === 'FILTER' ? viewCursor : selectedIndex;
+  $: listItems = mode === 'FILTER' ? viewItems : (mode === 'SEARCH' ? searchResults : items);
+  $: selectedIndexForList = mode === 'FILTER' ? viewCursor : (mode === 'SEARCH' ? searchCursor : selectedIndex);
   // Build a selected index Set in the coordinates of listItems from selectedPaths
   $: selectedSetForList = (() => {
     if (!selectedPaths || selectedPaths.size === 0) return new Set();
@@ -246,6 +256,14 @@
       return;
     }
 
+    // Global: Ctrl+F enters SEARCH (recursive)
+    const isCtrlF = (event.key === 'f' || event.key === 'F') && (event.ctrlKey || event.metaKey);
+    if (isCtrlF && mode !== 'INSERT') {
+      event.preventDefault();
+      startSearch();
+      return;
+    }
+
     // VISUAL mode keyboard handling
     if (mode === 'VISUAL') {
       // Esc exits VISUAL and clears multi-selection
@@ -321,6 +339,34 @@
     if (isQuestion) {
       event.preventDefault();
       showHelp = true;
+      return;
+    }
+
+    // SEARCH mode keyboard handling
+    if (mode === 'SEARCH') {
+      // Esc exits SEARCH
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelSearch();
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        revealSearchSelection();
+        cancelSearch();
+        return;
+      }
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (searchCursor < searchResults.length - 1) searchCursor++;
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (searchCursor > 0) searchCursor--;
+        return;
+      }
+      // Let typing go to the input; nothing else here
       return;
     }
 
@@ -446,6 +492,112 @@
         event.preventDefault();
         startDelete();
         break;
+    }
+  }
+
+  // ======== Search (recursive) ========
+  function startSearch() {
+    mode = 'SEARCH';
+    searchQuery = '';
+    searchResults = [];
+    searchCursor = 0;
+    searchLoading = false;
+    searchTruncated = false;
+    setTimeout(() => searchInputEl && searchInputEl.focus(), 0);
+  }
+  function cancelSearch() {
+    mode = 'NORMAL';
+    searchQuery = '';
+    searchResults = [];
+    searchCursor = 0;
+    searchLoading = false;
+    searchTruncated = false;
+  }
+  function scheduleSearch() {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, 200);
+  }
+  async function runSearch() {
+    const q = (searchQuery || '').trim();
+    if (!q) {
+      searchResults = [];
+      searchLoading = false;
+      searchTruncated = false;
+      return;
+    }
+    searchLoading = true;
+    try {
+      const res = await window.electronAPI.search({ root: currentPath, query: q, maxResults: 500 });
+      if (res && res.success) {
+        searchResults = res.results || [];
+        searchTruncated = !!res.truncated;
+        // reset cursor if out of bounds
+        if (searchCursor >= searchResults.length) searchCursor = Math.max(0, searchResults.length - 1);
+      } else {
+        console.error('search failed', res?.error);
+      }
+    } catch (e) {
+      console.error('search error', e);
+    } finally {
+      searchLoading = false;
+    }
+  }
+  function revealSearchSelection() {
+    const it = searchResults[searchCursor];
+    if (!it) return;
+    if (it.isDirectory) {
+      // navigate into directory and center first item
+      loadDirectory(it.path, true);
+    } else {
+      const dir = it.path.split('/').slice(0, -1).join('/') || '/';
+      const name = it.name;
+      loadDirectory(dir, true).then(() => {
+        const idx = items.findIndex(x => x.name === name);
+        if (idx !== -1) {
+          selectedIndex = idx;
+          rememberIndex[dir] = idx;
+          centerToken++;
+        }
+      });
+    }
+  }
+
+  function handleSearchKeydown(event) {
+    // navigation within results handled on window; here handle modifier ops and delete
+    const isCtrlC = (event.key === 'c' || event.key === 'C') && (event.ctrlKey || event.metaKey);
+    const isCtrlX = (event.key === 'x' || event.key === 'X') && (event.ctrlKey || event.metaKey);
+    const isCtrlV = (event.key === 'v' || event.key === 'V') && (event.ctrlKey || event.metaKey);
+
+    if (isCtrlC) {
+      event.preventDefault(); event.stopPropagation();
+      const it = searchResults[searchCursor];
+      if (!it) return;
+      clipboard = { op: 'copy', entries: [{ path: it.path, name: it.name, isDirectory: it.isDirectory }], sourceDir: currentPath };
+      cutMarkedPaths = new Set();
+      setStatus(`copied: ${it.name}`);
+      return;
+    }
+    if (isCtrlX) {
+      event.preventDefault(); event.stopPropagation();
+      const it = searchResults[searchCursor];
+      if (!it) return;
+      clipboard = { op: 'cut', entries: [{ path: it.path, name: it.name, isDirectory: it.isDirectory }], sourceDir: it.path.split('/').slice(0, -1).join('/') || '/' };
+      cutMarkedPaths = new Set([it.path]);
+      setStatus(`cut: ${it.name} (esc to cancel)`);
+      return;
+    }
+    if (isCtrlV) {
+      event.preventDefault(); event.stopPropagation();
+      pasteClipboard();
+      return;
+    }
+    if (event.key === 'Delete') {
+      event.preventDefault(); event.stopPropagation();
+      const it = searchResults[searchCursor];
+      if (!it) return;
+      deleteTargets = [{ path: it.path, name: it.name, isDirectory: it.isDirectory }];
+      showDeleteDialog = true;
+      return;
     }
   }
 
@@ -1099,24 +1251,78 @@
             />
           </div>
         {/if}
-        <FileList 
-          items={listItems}
-          selectedIndex={selectedIndexForList}
-          {renamingIndex}
-          {renameValue}
-          onNavigate={handleNavigate}
-          onSelect={(i) => handleSelect(mode === 'FILTER' ? viewIndexMap[i] : i)}
-          onToggleSelect={(i) => handleToggleSelect(i)}
-          onRangeSelect={(i) => handleRangeSelect(i)}
-          onRenameChange={handleRenameChange}
-          onRenameSubmit={submitRename}
-          onRenameCancel={cancelRename}
-          {cutMarkedPaths}
-          centerToken={centerToken}
-          sortState={sortState}
-          onSort={handleSortClick}
-          selectedSet={selectedSetForList}
-        />
+        {#if mode === 'SEARCH'}
+          <div class="bg-terminal-bg-light px-4 py-1 border-b border-terminal-border text-terminal-fg-dim text-tui-sm flex items-center gap-3">
+            <span class="text-terminal-accent">ctrl+f</span>
+            <input
+              bind:this={searchInputEl}
+              class="flex-1 bg-terminal-bg text-terminal-fg border border-terminal-border px-2 py-1 outline-none"
+              placeholder="search recursively…"
+              bind:value={searchQuery}
+              on:input={scheduleSearch}
+              on:keydown={handleSearchKeydown}
+              on:click|stopPropagation
+            />
+            <span class="whitespace-nowrap text-terminal-fg-dimmer">
+              {#if searchLoading}searching…{/if}
+              {#if !searchLoading}
+                {searchResults.length} result{searchResults.length === 1 ? '' : 's'}{#if searchTruncated} (truncated){/if}
+              {/if}
+            </span>
+          </div>
+        {/if}
+        {#if mode === 'SEARCH'}
+          {#if (searchQuery || '').trim().length === 0}
+            <div class="flex-1 flex items-center justify-center text-terminal-fg-dimmer">
+              type to search recursively…
+            </div>
+          {:else if !searchLoading && searchResults.length === 0}
+            <div class="flex-1 flex items-center justify-center text-terminal-fg-dimmer">
+              no results
+            </div>
+          {:else}
+            <FileList 
+              items={listItems}
+              selectedIndex={selectedIndexForList}
+              {renamingIndex}
+              {renameValue}
+              onNavigate={handleNavigate}
+              onSelect={(i) => { searchCursor = i; }}
+              onToggleSelect={(i) => handleToggleSelect(i)}
+              onRangeSelect={(i) => handleRangeSelect(i)}
+              onRenameChange={handleRenameChange}
+              onRenameSubmit={submitRename}
+              onRenameCancel={cancelRename}
+              {cutMarkedPaths}
+              centerToken={centerToken}
+              sortState={sortState}
+              onSort={handleSortClick}
+              selectedSet={selectedSetForList}
+            />
+          {/if}
+        {:else}
+          <FileList 
+            items={listItems}
+            selectedIndex={selectedIndexForList}
+            {renamingIndex}
+            {renameValue}
+            onNavigate={handleNavigate}
+            onSelect={(i) => {
+              if (mode === 'FILTER') { selectedIndex = viewIndexMap[i]; rememberIndex[currentPath] = selectedIndex; }
+              else { handleSelect(i); }
+            }}
+            onToggleSelect={(i) => handleToggleSelect(i)}
+            onRangeSelect={(i) => handleRangeSelect(i)}
+            onRenameChange={handleRenameChange}
+            onRenameSubmit={submitRename}
+            onRenameCancel={cancelRename}
+            {cutMarkedPaths}
+            centerToken={centerToken}
+            sortState={sortState}
+            onSort={handleSortClick}
+            selectedSet={selectedSetForList}
+          />
+        {/if}
       {/if}
     </div>
 
@@ -1124,12 +1330,8 @@
     <PaneResizer on:resize={handlePreviewResize} />
 
     <!-- Preview Pane -->
-    <div style="width: {previewWidth}px;" class="tui-border-bright bg-terminal-bg-light flex items-center justify-center text-terminal-fg-dimmer flex-shrink-0">
-      <div class="text-center">
-        <div class="text-4xl mb-2">📄</div>
-        <div>Preview pane</div>
-        <div class="text-tui-sm mt-1">(Phase 3)</div>
-      </div>
+    <div style="width: {previewWidth}px;" class="tui-border-bright bg-terminal-bg-light flex-shrink-0 min-w-[250px] max-w-[800px]">
+      <PreviewPane item={items[selectedIndex]} multiCount={(selectedPaths && selectedPaths.size) || 0} />
     </div>
   </div>
 
